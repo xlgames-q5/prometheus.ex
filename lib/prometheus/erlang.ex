@@ -14,13 +14,19 @@ defmodule Prometheus.Erlang do
     end
   end
 
+  if Version.match?(System.version(), "< 1.14.0-rc.0") do
+    def defdelegate_each(fun, opts), do: Kernel.Utils.defdelegate(fun, opts)
+  else
+    def defdelegate_each(fun, opts), do: Kernel.Utils.defdelegate_each(fun, opts)
+  end
+
   defmacro delegate(fun, opts \\ []) do
     fun = Macro.escape(fun, unquote: true)
 
     quote bind_quoted: [fun: fun, opts: opts] do
       target = Keyword.get(opts, :to, @erlang_module)
 
-      {name, args, as, as_args} = Kernel.Utils.defdelegate(fun, opts)
+      {name, args, as, as_args} = defdelegate_each(fun, opts)
 
       def unquote(name)(unquote_splicing(args)) do
         Prometheus.Error.with_prometheus_error(
@@ -36,14 +42,33 @@ defmodule Prometheus.Erlang do
     quote bind_quoted: [fun: fun, opts: opts] do
       target = Keyword.get(opts, :to, @erlang_module)
 
-      {name, args, as, [spec | as_args]} = Kernel.Utils.defdelegate(fun, opts)
+      {name, args, as, [spec | as_args]} = defdelegate_each(fun, opts)
 
-      def unquote(name)(unquote_splicing(args)) do
-        {registry, name, labels} = Metric.parse_spec(unquote(spec))
+      if as_args == [] do
+        def unquote(name)(unquote_splicing(args)) do
+          {registry, name, labels} = Metric.parse_spec(unquote(spec))
 
-        Prometheus.Error.with_prometheus_error(
-          unquote(target).unquote(as)(registry, name, labels, unquote_splicing(as_args))
-        )
+          Prometheus.Error.with_prometheus_error(
+            unquote(target).unquote(as)(registry, name, labels, unquote_splicing(as_args))
+          )
+        end
+      else
+        def unquote(name)(unquote_splicing(args)) do
+          {registry, name, labels} = Metric.parse_spec(unquote(spec))
+
+          conv_args =
+            case unquote_splicing(as_args) do
+              %{value: value} ->
+                value
+
+              value ->
+                value
+            end
+
+          Prometheus.Error.with_prometheus_error(
+            unquote(target).unquote(as)(registry, name, labels, conv_args)
+          )
+        end
       end
     end
   end
